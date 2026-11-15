@@ -6761,6 +6761,63 @@ do
     MiscellaneousSection:Toggle({ Name="Korblox",  Flag="misc_korblox",  Default=false, Callback=function(state) setKorbloxState(state)  end })
 end
 
+do
+    local AutoStomp = {
+        Enabled = false,
+        Delay   = 0,
+    }
+    local stompMasterOn = true
+    local stompToggle
+
+    local function getMainRemoteEvent()
+        local RS = game:GetService("ReplicatedStorage")
+        local mainRemotes = RS:FindFirstChild("MainRemotes")
+        return mainRemotes and mainRemotes:FindFirstChild("MainRemoteEvent")
+    end
+
+    stompToggle = MiscellaneousSection:Toggle({
+        Name = "Auto Stomp", Flag = "autostomp_enabled", Default = false,
+        Callback = function(state)
+            stompMasterOn = state and true or false
+            AutoStomp.Enabled = state and true or false
+        end,
+    })
+    stompToggle:Keybind({
+        Flag = "autostomp_key", Default = Enum.KeyCode.Unknown, Mode = "Toggle",
+        Callback = function(v)
+            if type(v) ~= "boolean" then return end
+            if not stompMasterOn then return end
+            do
+                local _kb = Library and Library.Flags and Library.Flags["autostomp_key"]
+                if isKeybindNone(_kb) then return end
+            end
+            AutoStomp.Enabled = v
+            if stompToggle and type(stompToggle.SetValue) == "function" then
+                pcall(function() stompToggle:SetValue(v) end)
+            end
+        end,
+    })
+
+    MiscellaneousSection:Slider({
+        Name = "Stomp Delay", Flag = "autostomp_delay",
+        Min = 0, Max = 1000, Default = 0, Decimals = 1, Suffix = "ms",
+        Callback = function(v) AutoStomp.Delay = v / 1000 end,
+    })
+
+    task.spawn(function()
+        while Alive do
+            if AutoStomp.Enabled then
+                local ev = getMainRemoteEvent()
+                if ev then
+                    pcall(function() ev:FireServer("Stomp") end)
+                end
+                task.wait(AutoStomp.Delay)
+            else
+                task.wait(0.1)
+            end
+        end
+    end)
+end
 
 -- ============================================================
 -- MISC (RIGHT) — Auto Door + Hover Buy + Utilities
