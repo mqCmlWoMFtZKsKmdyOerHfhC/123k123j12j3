@@ -1,13 +1,27 @@
-for _, v in pairs(getgc(true)) do
-    if type(v) == "table" and pcall(function() return rawget(v, "indexInstance") end) then
-        local index_inst = rawget(v, "indexInstance")
-        if type(index_inst) == "table" and #index_inst >= 2 and type(index_inst[2]) == "function" then
-            local name = index_inst[1]
-            if type(name) == "string" and name == "kick" then
-                hookfunction(index_inst[2], function(...) return false end)
-            end
+if getgenv().BYPASSED_ADONIS ~= true then
+    local ok = pcall(function()
+        local ScriptContext = game:service("ScriptContext")
+        local LP            = game:service("Players").LocalPlayer
+        ScriptContext:SetTimeout(1)
+        local Kick; Kick = hookfunction(LP.Kick, function(...)
+            if checkcaller() or tostring(getcallingscript()) ~= "ClientMover" then return Kick(...) end
+        end)
+        local DI; DI = hookfunction(debug.info, function(...)
+            if select(2, ...) ~= "slanf" then return DI(...) end
+            if checkcaller() or tostring(getcallingscript()) ~= "ClientMover" then return DI(...) end
+            return coroutine.yield()
+        end)
+        for _, v in getgc(true) do
+            if type(v) ~= "table" then continue end
+            local Kill     = rawget(v, "Kill")
+            local Detected = rawget(v, "Detected")
+            if type(Kill)     == "function" and debug.info(Kill,"s")     == ".Client.Client"     then hookfunction(Kill,     function() end) end
+            if type(Detected) == "function" and debug.info(Detected,"s") == ".Client.Core.Anti"  then hookfunction(Detected, function() end) end
         end
-    end
+        setfflag("DebugRunParallelLuaOnMainThread","true")
+    end)
+    if ok then getgenv().BYPASSED_ADONIS = true end
+    task.wait(0.5)
 end
 
 -- ============================================================
@@ -356,6 +370,7 @@ local forceESPreFresh
 local updateBarGradients
 local destroyAimViewBeam
 local cr_restore
+local sa_teardown_ref          -- forward decl: silent-aim teardown (Raycast method)
 local setHeadlessState
 local setKorbloxState
 local stopInfiniteAmmo
@@ -483,7 +498,7 @@ local SKELETON_R6 = {
 -- ============================================================
 local Library
 do
-    local raw = game:HttpGet("https://raw.githubusercontent.com/AdamScripting67/cb/refs/heads/main/Colorbot%20Panel.lua")
+    local raw = game:HttpGet("https://raw.githubusercontent.com/mqCmlWoMFtZKsKmdyOerHfhC/cb/refs/heads/main/Colorbot%20Panel.lua")
     -- Instant menu drag (no 0.35s lag tween)
     raw = raw:gsub(
         "self:Tween%(%s*TweenInfo%.new%(0%.35, Enum%.EasingStyle%.Quart, Enum%.EasingDirection%.Out%),%s*{ Position = UDim2New%(0, NewX, 0, NewY%)%s*}%s*%)",
@@ -525,9 +540,9 @@ pcall(function()
 end)
 
 Library.Folders = {
-    Directory = "getelytra",
-    Configs   = "getelytra/Configs",
-    Assets    = "getelytra/Assets",
+    Directory = "euleon",
+    Configs   = "euleon/Configs",
+    Assets    = "euleon/Assets",
 }
 for _, Value in pairs(Library.Folders) do
     if not isfolder(Value) then makefolder(Value) end
@@ -539,7 +554,7 @@ pcall(function()
 end)
 
 local function buildWindowTitle()
-    return string.format("/getelytra | %s | %s", GameName, os.date("%b %d %Y | %H:%M"))
+    return string.format("/euleon | %s | %s", GameName, os.date("%b %d %Y | %H:%M"))
 end
 
 -- Exact size measured from the menu screenshot (full combat layout visible)
@@ -566,7 +581,7 @@ task.defer(function()
         if applied then break end
     end
 end)
-local Watermark = Library:Watermark("/getelytra")
+local Watermark = Library:Watermark("/euleon")
 local KeybindList  = Library:KeybindList()
 
 -- Compact UI + responsive drag
@@ -612,7 +627,7 @@ task.spawn(function()
         if not d:IsA("TextLabel") then return false end
         local t = d.Text
         if type(t) ~= "string" then return false end
-        return t:find("/getelytra", 1, true) ~= nil or (t:find("getelytra", 1, true) ~= nil)
+        return t:find("/euleon", 1, true) ~= nil or (t:find("euleon", 1, true) ~= nil)
     end
     local function scanForTitleLabel()
         if cachedLabel and cachedLabel.Parent then return cachedLabel end
@@ -650,7 +665,7 @@ local PlayersPage  = Window:Page({Name = "Players", Columns = 2})
 local SettingsPage = Library:CreateSettingsPage(Window, KeybindList, Watermark)
 
 local AimbotSection   = CombatPage:Section({Name = "Aimbot",       Side = 1})
-local ClientRedirectionSection = CombatPage:Section({Name = "Client Redirection", Side = 2})
+local ClientRedirectionSection = CombatPage:Section({Name = "Bullet Redirection", Side = 2})
 local TriggerSection  = CombatPage:Section({Name = "Triggerbot",   Side = 2})
 local GunMacroSection = CombatPage:Section({Name = "Gun Macro", Side = 2})
 local HitboxExpanderSection = CombatPage:Section({Name = "Hitbox Expander", Side = 1})
@@ -661,6 +676,8 @@ local ESPSection      = VisualsPage:Section({Name = "ESP",         Side = 1})
 local MovementSection = MiscPage:Section({Name = "Movement", Side = 1})
 local RangeExtenderSection = MiscPage:Section({Name = "Range Extender", Side = 1})
 local MiscellaneousSection = MiscPage:Section({Name = "Misc", Side = 2})
+local SpreadModSection = MiscPage:Section({Name = "Spread Modifications", Side = 1})
+
 
 local PlayerListSec   = PlayersPage:Section({Name = "Players",     Side = 1})
 
@@ -755,11 +772,12 @@ do
 end
 
 -- ============================================================
--- CLIENT REDIRECTION
+-- BULLET REDIRECTION
 -- ============================================================
 do
-        local ClientRedirection = {
+    local ClientRedirection = {
         Enabled            = false,
+        Method             = "Fireserver",   -- "Fireserver" | "Raycast"
         VisibleCheck       = false,
         ShowFOV            = false,
         FillFOV            = false,
@@ -775,7 +793,7 @@ do
     local cr_activeTarget = nil
     local cr_state        = nil
 
-        local cr_FOVCircle
+    local cr_FOVCircle
     local cr_FOVCircleFill
     pcall(function()
         local c = Drawing.new("Circle")
@@ -802,6 +820,7 @@ do
         end
     end)
 
+    -- ── shared helpers ──────────────────────────────────────
     local function cr_getHitbox(char)
         local hrp = char:FindFirstChild("HumanoidRootPart")
         if not hrp then return nil end
@@ -977,8 +996,167 @@ do
         return best
     end
 
+    -- ==========================================================
+    -- SILENT AIM (Raycast method) — Der Hood aim-stream rewrite
+    -- Adapts the standalone "Euleon Der Hood silent aim" logic
+    -- ==========================================================
+    local SA_Target       = nil
+    local SA_AimPart      = nil
+    local SA_AimPos       = nil
+    local SA_gunHandler   = nil
+    local SA_orig_shoot   = nil
+    local SA_orig_getAim  = nil
+    local SA_MainRemote   = nil
+    local SA_Installed    = false
+    local SA_namecallInstalled = false
+    local SA_Notified     = false
+
+    local function SA_Active()
+        return ClientRedirection.Enabled and ClientRedirection.Method == "Raycast"
+    end
+
+    local function SA_GetAimPart(plr)
+        if not plr or not plr.Character then return nil end
+        local mousePos = UserInputService:GetMouseLocation()
+        local parts = {"Head", "UpperTorso", "LowerTorso", "LeftUpperArm", "RightUpperLeg"}
+        local closest, closestD = nil, math.huge
+        for _, name in ipairs(parts) do
+            local p = plr.Character:FindFirstChild(name)
+            if p and p:IsA("BasePart") then
+                local sp, on = Camera:WorldToViewportPoint(p.Position)
+                if on then
+                    local d = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
+                    if d < closestD then closestD = d; closest = p end
+                end
+            end
+        end
+        return closest
+    end
+
+    local function SA_UpdateCachedAim()
+        SA_AimPart = nil
+        SA_AimPos  = nil
+        if not SA_Active() then SA_Target = nil; return end
+        local target = cr_getClosestToMouse()
+        SA_Target = target
+        if not target then return end
+        local part = SA_GetAimPart(target)
+        if not part then return end
+        SA_AimPart = part
+        SA_AimPos  = part.Position
+        local pred = MouseLock.Prediction
+        if pred and pred > 0 then
+            local hrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local v = hrp.AssemblyLinearVelocity or hrp.Velocity
+                if v then SA_AimPos = SA_AimPos + v * pred end
+            end
+        end
+    end
+
+    local function SA_Install()
+        if SA_Installed then return end
+        local RSvc = game:GetService("ReplicatedStorage")
+        local modulesFolder = RSvc:FindFirstChild("Modules")
+        if not modulesFolder then
+            if not SA_Notified then
+                SA_Notified = true
+                pcall(function() Library:Notification("Raycast: Modules not found — Der Hood only.", 3) end)
+            end
+            return
+        end
+        local ghScript = modulesFolder:FindFirstChild("GunHandler")
+        if not ghScript then
+            if not SA_Notified then
+                SA_Notified = true
+                pcall(function() Library:Notification("Raycast: GunHandler not found — Der Hood only.", 3) end)
+            end
+            return
+        end
+        local okReq, gh = pcall(require, ghScript)
+        if not okReq or type(gh) ~= "table" then
+            if not SA_Notified then
+                SA_Notified = true
+                pcall(function() Library:Notification("Raycast: GunHandler require failed.", 3) end)
+            end
+            return
+        end
+        SA_gunHandler  = gh
+        SA_orig_shoot  = gh.shoot
+        SA_orig_getAim = gh.getAim
+
+        if SA_orig_shoot then
+            gh.shoot = function(args)
+                if not SA_Active() then return SA_orig_shoot(args) end
+                SA_UpdateCachedAim()
+                local results = { SA_orig_shoot(args) }
+                if SA_AimPart then results[2] = SA_AimPart end
+                return table.unpack(results)
+            end
+        end
+        if SA_orig_getAim then
+            gh.getAim = function(origin, p1)
+                if not SA_Active() or not SA_AimPos then return SA_orig_getAim(origin, p1) end
+                local dir = SA_AimPos - origin
+                return dir.Unit, dir.Magnitude
+            end
+        end
+
+        SA_MainRemote = RSvc:FindFirstChild("MainRemoteEvent")
+            or (RSvc:FindFirstChild("MainRemotes") and RSvc.MainRemotes:FindFirstChild("MainRemoteEvent"))
+
+        if not SA_namecallInstalled and SA_MainRemote and hookmetamethod
+           and newcclosure and checkcaller and getnamecallmethod then
+            local oldNamecall
+            oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+                if self == SA_MainRemote and not checkcaller() and getnamecallmethod() == "FireServer" then
+                    local args = { ... }
+                    local tag = args[1]
+                    if SA_Active() and SA_AimPos
+                       and typeof(tag) == "string"
+                       and typeof(args[2]) == "Vector3"
+                       and (tag:find("D3RHooD") or tag:find("MSOUEPoS") or tag:find("233")) then
+                        args[2] = SA_AimPos
+                        return oldNamecall(self, table.unpack(args))
+                    end
+                end
+                return oldNamecall(self, ...)
+            end))
+            SA_namecallInstalled = true
+        end
+
+        SA_Installed = true
+    end
+
+    local function SA_Teardown()
+        if not SA_Installed then return end
+        if SA_gunHandler then
+            if SA_orig_shoot  then SA_gunHandler.shoot  = SA_orig_shoot  end
+            if SA_orig_getAim then SA_gunHandler.getAim = SA_orig_getAim end
+        end
+        SA_gunHandler  = nil
+        SA_orig_shoot  = nil
+        SA_orig_getAim = nil
+        SA_AimPart     = nil
+        SA_AimPos      = nil
+        SA_Target      = nil
+        SA_Installed   = false
+    end
+    sa_teardown_ref = SA_Teardown
+
+    -- Silent Aim update loop (Raycast method)
     trackConn(RunService.RenderStepped:Connect(function()
-        if not Alive or not ClientRedirection.Enabled then
+        if not Alive then return end
+        if not SA_Active() then
+            if SA_AimPos then SA_AimPos = nil; SA_AimPart = nil; SA_Target = nil end
+            return
+        end
+        SA_UpdateCachedAim()
+    end))
+
+    -- Hitbox displacement loop (Fireserver method)
+    trackConn(RunService.RenderStepped:Connect(function()
+        if not Alive or not ClientRedirection.Enabled or ClientRedirection.Method ~= "Fireserver" then
             if cr_state then cr_restore() end
             return
         end
@@ -996,10 +1174,8 @@ do
         local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
         if not myHrp then return end
 
-        -- Actual studs between local player and target (never pull closer than real distance)
         local distToTarget = (myHrp.Position - cr_state.hrp.Position).Magnitude
 
-        -- Max allowed range: Range Extender gun range when RE is on, else TargetRange fallback
         local maxRange = RangeExtender.TargetRange
         if RangeExtender.Enabled then
             local crTool = myChar:FindFirstChildWhichIsA("Tool")
@@ -1015,7 +1191,6 @@ do
         local dir = cursorWorld - myPos
         if dir.Magnitude < 0.01 then dir = myHrp.CFrame.LookVector else dir = dir.Unit end
 
-        -- Place hitbox at the target's REAL distance along the aim ray (exact studs)
         local redirectDist = distToTarget
         local displacedPos = myPos + dir * redirectDist
         local displacedCFrame = CFrame.new(displacedPos) * cr_state.hrp.CFrame.Rotation
@@ -1027,7 +1202,8 @@ do
         end
     end))
 
-        trackConn(RunService.RenderStepped:Connect(function()
+    -- FOV circle loop (shared by both methods)
+    trackConn(RunService.RenderStepped:Connect(function()
         if not Alive then return end
         local crFovActive = ClientRedirection.ShowFOV
         if cr_FOVCircle then
@@ -1053,17 +1229,19 @@ do
         end
     end))
 
+    -- 120s reset only matters for the Fireserver hitbox method
     task.spawn(function()
         local CR_RESET_INTERVAL = 120
         while Alive do
             task.wait(CR_RESET_INTERVAL)
             if not Alive then break end
-            if not ClientRedirection.Enabled then continue end
+            if not ClientRedirection.Enabled or ClientRedirection.Method ~= "Fireserver" then continue end
             local prevTarget = cr_activeTarget
             pcall(cr_restore)
-            if ClientRedirection.Enabled and prevTarget and prevTarget.Parent then
+            if ClientRedirection.Enabled and ClientRedirection.Method == "Fireserver"
+               and prevTarget and prevTarget.Parent then
                 task.wait()
-                if ClientRedirection.Enabled then
+                if ClientRedirection.Enabled and ClientRedirection.Method == "Fireserver" then
                     pcall(function() cr_setup(prevTarget) end)
                 end
             end
@@ -1080,8 +1258,15 @@ do
                 if hb_restore then pcall(hb_restore) end
                 if hbToggleRef then pcall(function() hbToggleRef:SetValue(false) end) end
             end
+            if ClientRedirection.Method == "Raycast" then
+                SA_Install()   -- install-once; no-op on subsequent calls
+            end
         else
-            cr_restore()
+            if cr_restore then pcall(cr_restore) end
+            -- Clear silent-aim cache; hooks stay installed but gated by SA_Active()
+            SA_AimPos  = nil
+            SA_AimPart = nil
+            SA_Target  = nil
         end
     end
 
@@ -1099,7 +1284,7 @@ do
             setCRState(state)
         end,
     })
-    
+
     crToggleRef:Keybind({
         Flag = "cr_key", Default = Enum.KeyCode.Unknown, Mode = "Hold",
         Callback = function(v)
@@ -1117,6 +1302,31 @@ do
         end,
     })
 
+    -- ── Redirect Method dropdown (under the toggle) ──────────
+    ClientRedirectionSection:Dropdown({
+        Name = "Redirect Method", Flag = "cr_method",
+        Items = {"Fireserver", "Raycast"},
+        Default = "Fireserver",
+        Callback = function(v)
+            local newMethod = v or "Fireserver"
+            local oldMethod = ClientRedirection.Method
+            if newMethod == oldMethod then return end
+            ClientRedirection.Method = newMethod
+            if not ClientRedirection.Enabled then return end
+            -- Clean up old method's runtime state (hooks stay installed, gated by SA_Active)
+            if oldMethod == "Fireserver" then
+                if cr_restore then pcall(cr_restore) end
+            end
+            SA_AimPos  = nil
+            SA_AimPart = nil
+            SA_Target  = nil
+            -- Bring up new method
+            if newMethod == "Raycast" then
+                SA_Install()   -- no-op if already installed
+            end
+        end,
+    })
+
     ClientRedirectionSection:Slider({
         Name = "FOV", Flag = "cr_fov",
         Min = 0, Max = 500, Default = 0, Decimals = 1,
@@ -1127,12 +1337,12 @@ do
         Name = "Show FOV", Flag = "cr_showfov", Default = false,
         Callback = function(v) ClientRedirection.ShowFOV = v and true or false end,
     })
-    
+
     crShowFOVToggle:Colorpicker({
         Flag = "cr_fov_color", Default = ClientRedirection.FOVColor,
         Callback = function(c) ClientRedirection.FOVColor = c end,
     })
-        local crFillFOVToggle = ClientRedirectionSection:Toggle({
+    local crFillFOVToggle = ClientRedirectionSection:Toggle({
         Name = "Fill FOV", Flag = "cr_fill_fov", Default = false,
         Callback = function(v) ClientRedirection.FillFOV = v and true or false end,
     })
@@ -1145,7 +1355,7 @@ do
         Min = 0, Max = 100, Default = 0, Decimals = 1,
         Callback = function(v) ClientRedirection.FillFOVTransparency = v / 100 end,
     })
-    
+
     ClientRedirectionSection:Toggle({
         Name = "Visible Check", Flag = "cr_visible", Default = false,
         Callback = function(v) ClientRedirection.VisibleCheck = v and true or false end,
@@ -1885,7 +2095,7 @@ do
         Name = "Enabled", Flag = "hitbox_enabled", Default = false,
         Callback = function(state)
             if state and ClientRedirectionState and ClientRedirectionState.Enabled then
-                Library:Notification("Disable Client Redirection first.", 2)
+                Library:Notification("Disable Bullet Redirection first.", 2)
                 if hbToggleRef and type(hbToggleRef.SetValue) == "function" then
                     pcall(function() hbToggleRef:SetValue(false) end)
                 end
@@ -1905,7 +2115,7 @@ do
         Callback    = function(v)
             if type(v) ~= "boolean" then return end
             if v and ClientRedirectionState and ClientRedirectionState.Enabled then
-                Library:Notification("Disable Client Redirection first.", 2)
+                Library:Notification("Disable Bullet Redirection first.", 2)
                 return
             end
             hbKeybindHeld = v
@@ -2349,6 +2559,205 @@ do
         Min = 0, Max = 238, Default = 0, Decimals = 1, Suffix = " studs",
         Callback = function(v) RangeExtender.Guns["[TacticalShotgun]"].Range = v end,
     })
+end
+
+-- ============================================================
+-- SPREAD MODIFICATIONS
+-- ============================================================
+do
+    local SpreadState = {
+        Enabled = true,
+        Amount  = 50,
+        Stats   = { math_hits = 0, rng_hits = 0, math_ok = false, rng_ok = false },
+    }
+
+    local function spreadOn()    return SpreadState.Enabled end
+    local function amountScale() return SpreadState.Amount / 100 end
+
+    -- ── math.random hook ──
+    do
+        local function isSpreadCall(nargs, a1, a2)
+            if nargs == 0 then return true end
+            if nargs >= 2 and type(a1) == "number" and type(a2) == "number" then
+                if math.abs(a1) < 2 and math.abs(a2) < 2
+                    and (a1 ~= math.floor(a1) or a2 ~= math.floor(a2)) then
+                    return true
+                end
+                if math.abs(a1 + a2) < 0.01 and math.abs(a1 - a2) > 0.001 then
+                    return true
+                end
+            end
+            if nargs == 1 and type(a1) == "number" and math.abs(a1) < 2
+                and a1 ~= math.floor(a1) then
+                return true
+            end
+            return false
+        end
+
+        local ok = false
+        if hookfunction and newcclosure and checkcaller then
+            ok = pcall(function()
+                local old
+                old = hookfunction(math.random, newcclosure(function(...)
+                    if checkcaller() then return old(...) end
+                    if not spreadOn() then return old(...) end
+                    local n = select("#", ...)
+                    local a1, a2 = ...
+                    if isSpreadCall(n, a1, a2) then
+                        SpreadState.Stats.math_hits = SpreadState.Stats.math_hits + 1
+                        return old(...) * amountScale()
+                    end
+                    return old(...)
+                end))
+            end)
+        end
+        if not ok then
+            pcall(function()
+                local orig = math.random
+                math.random = function(...)
+                    if not spreadOn() then return orig(...) end
+                    local n = select("#", ...)
+                    local a1, a2 = ...
+                    if isSpreadCall(n, a1, a2) then
+                        SpreadState.Stats.math_hits = SpreadState.Stats.math_hits + 1
+                        return orig(...) * amountScale()
+                    end
+                    return orig(...)
+                end
+                ok = true
+            end)
+        end
+        SpreadState.Stats.math_ok = ok
+    end
+
+    -- ── Random.NextNumber hook ──
+    do
+        local function wrapNextNumber(orig)
+            return newcclosure(function(...)
+                if checkcaller() then return orig(...) end
+                if not spreadOn() then return orig(...) end
+                local self, a, b = ...
+                if type(a) == "number" and type(b) == "number"
+                    and math.abs(a + b) < 0.01 and math.abs(a - b) > 0.001 then
+                    SpreadState.Stats.rng_hits = SpreadState.Stats.rng_hits + 1
+                    return orig(...) * amountScale()
+                end
+                return orig(...)
+            end)
+        end
+
+        local ok = false
+        if setreadonly and getrawmetatable and newcclosure and checkcaller then
+            pcall(function()
+                local mt = getrawmetatable(Random.new())
+                if not mt then return end
+                setreadonly(mt, false)
+                local idx = mt.__index
+                if type(idx) == "table" and type(idx.NextNumber) == "function" then
+                    idx.NextNumber = wrapNextNumber(idx.NextNumber)
+                    ok = true
+                end
+                setreadonly(mt, true)
+            end)
+        end
+        if not ok and hookfunction and newcclosure and checkcaller then
+            pcall(function()
+                local rng = Random.new()
+                local target = rng.NextNumber
+                if type(target) ~= "function" then return end
+                local realOrig
+                local wrapper = newcclosure(function(...)
+                    if checkcaller() then return realOrig(...) end
+                    if not spreadOn() then return realOrig(...) end
+                    local self, a, b = ...
+                    if type(a) == "number" and type(b) == "number"
+                        and math.abs(a + b) < 0.01 and math.abs(a - b) > 0.001 then
+                        SpreadState.Stats.rng_hits = SpreadState.Stats.rng_hits + 1
+                        return realOrig(...) * amountScale()
+                    end
+                    return realOrig(...)
+                end)
+                realOrig = hookfunction(target, wrapper)
+                ok = true
+            end)
+        end
+        SpreadState.Stats.rng_ok = ok
+    end
+
+    -- ── UI with init-callback guard ──
+    local spreadReady  = false   -- false during construction; true after
+    local spreadToggle
+
+    spreadToggle = SpreadModSection:Toggle({
+        Name = "Enabled", Flag = "spread_enabled", Default = false,
+        Callback = function(state)
+            if not spreadReady then return end          -- ★ ignore init callback
+            SpreadState.Enabled = (state == true)
+            print("[SpreadMod] user toggle ->", SpreadState.Enabled)
+        end,
+    })
+
+    SpreadModSection:Slider({
+        Name = "Amount", Flag = "spread_amount",
+        Min = 0, Max = 100, Default = 50, Decimals = 1,
+        Callback = function(v)
+            if not spreadReady then return end          -- ★ ignore init callback
+            SpreadState.Amount = v
+        end,
+    })
+
+    -- ★ Force the correct state AFTER the library has finished its init
+    -- (some libraries fire Callback(false) regardless of Default=true)
+    task.spawn(function()
+        task.wait(0.4)
+        spreadReady = true
+        SpreadState.Enabled = true
+        SpreadState.Amount  = 50
+        if spreadToggle and type(spreadToggle.SetValue) == "function" then
+            pcall(function() spreadToggle:SetValue(true) end)   -- sync visual
+        end
+        print("[SpreadMod] INIT DONE | enabled =", SpreadState.Enabled,
+              "| amount =", SpreadState.Amount,
+              "| math_ok =", SpreadState.Stats.math_ok,
+              "| rng_ok =", SpreadState.Stats.rng_ok)
+    end)
+
+    -- ★ Live counter — if this doesn't print while you shoot, hooks aren't firing
+    task.spawn(function()
+        local lastM, lastR = 0, 0
+        while Alive do
+            task.wait(2)
+            local dm = SpreadState.Stats.math_hits - lastM
+            local dr = SpreadState.Stats.rng_hits  - lastR
+            if dm > 0 or dr > 0 then
+                print(string.format(
+                    "[SpreadMod] LIVE | math +%d | rng +%d | amount %.0f%% | enabled %s",
+                    dm, dr, SpreadState.Amount, tostring(SpreadState.Enabled)))
+            end
+            lastM = SpreadState.Stats.math_hits
+            lastR = SpreadState.Stats.rng_hits
+        end
+    end)
+
+    getgenv().SpreadMod = {
+        Settings  = SpreadState,
+        Stats     = SpreadState.Stats,
+        Enable    = function()
+            SpreadState.Enabled = true
+            if spreadToggle and type(spreadToggle.SetValue) == "function" then
+                pcall(function() spreadToggle:SetValue(true) end)
+            end
+        end,
+        Disable   = function()
+            SpreadState.Enabled = false
+            if spreadToggle and type(spreadToggle.SetValue) == "function" then
+                pcall(function() spreadToggle:SetValue(false) end)
+            end
+        end,
+        SetAmount = function(n)
+            SpreadState.Amount = math.clamp(tonumber(n) or 50, 0, 100)
+        end,
+    }
 end
 
 -- ============================================================
@@ -3684,7 +4093,7 @@ do
                 blCacheClear(plr.Name) -- user re-whitelisted → forget the cached blacklist
                 -- Drop any active combat locks on newly-whitelisted players
                 if CurrentTarget == plr then CurrentTarget = nil end
-                if CR_State and CR_State.ActiveTarget == plr then pcall(function() if cr_restore then cr_restore() end end) end
+                if CR_State and CR_State.ActiveTarget == plr then pcall(function() Library:Notification("Disable Bullet Redirection first.", 2) end) end
                 if HBE_State and HBE_State.ActiveTarget == plr then pcall(function() if hb_restore then hb_restore() end end) end
                 if re_activeTarget == plr then pcall(function() if re_restore then re_restore() end end) end
             end
@@ -5990,6 +6399,58 @@ do
 end
 
 -- ============================================================
+-- NO SLOWDOWN (destroys BodyEffects.Movement slow effects)
+-- ============================================================
+do
+    local NoSlowdown = { Enabled = false }
+
+    local function ns_isAliveLocal()
+        local char = LocalPlayer.Character
+        if not char then return false end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        return hum and hum.Health > 0
+    end
+
+    trackConn(RunService.Stepped:Connect(function()
+        if not Alive or not NoSlowdown.Enabled then return end
+        if not ns_isAliveLocal() then return end
+        local be = LocalPlayer.Character:FindFirstChild("BodyEffects")
+        if not be then return end
+        local movement = be:FindFirstChild("Movement")
+        if not movement then return end
+        for _, name in ipairs({ "NoWalkSpeed", "NoJumping", "ReduceWalk" }) do
+            local effect = movement:FindFirstChild(name)
+            if effect then pcall(function() effect:Destroy() end) end
+        end
+    end))
+
+    local nsMasterOn = true
+    local nsToggle
+    nsToggle = MiscellaneousSection:Toggle({
+        Name = "No Slowdown", Flag = "misc_noslowdown", Default = false,
+        Callback = function(state)
+            nsMasterOn = state and true or false
+            NoSlowdown.Enabled = state and true or false
+        end,
+    })
+    nsToggle:Keybind({
+        Flag = "misc_noslowdown_key", Default = Enum.KeyCode.Unknown, Mode = "Toggle",
+        Callback = function(v)
+            if type(v) ~= "boolean" then return end
+            if not nsMasterOn then return end
+            do
+                local _kb = Library and Library.Flags and Library.Flags["misc_noslowdown_key"]
+                if isKeybindNone(_kb) then return end
+            end
+            NoSlowdown.Enabled = v
+            if nsToggle and type(nsToggle.SetValue) == "function" then
+                pcall(function() nsToggle:SetValue(v) end)
+            end
+        end,
+    })
+end
+
+-- ============================================================
 -- INFINITE AMMO
 -- ============================================================
 do
@@ -5998,6 +6459,28 @@ do
         "[Revolver]",
         "[TacticalShotgun]",
     }
+
+local targetId = "rbxassetid://136003231566305"
+
+local function blockAnimation(char)
+    if not char then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
+    if not humanoid then return end
+    local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 5)
+    if not animator then return end
+
+    animator.AnimationPlayed:Connect(function(track)
+        if not InfiniteAmmo.Enabled then return end
+        if track and track.Animation and track.Animation.AnimationId == targetId then
+            pcall(function() track:Stop(0) end)
+        end
+    end)
+end
+
+if LocalPlayer.Character then
+    blockAnimation(LocalPlayer.Character)
+end
+trackConn(LocalPlayer.CharacterAdded:Connect(blockAnimation))
 
     local function getMainEvent()
         local RS = game:GetService("ReplicatedStorage")
@@ -6280,236 +6763,133 @@ end
 
 
 -- ============================================================
--- MISC (RIGHT) — Auto Door + Hover Buy
+-- MISC (RIGHT) — Auto Door + Hover Buy + Utilities
 -- ============================================================
 do
-    -- ── Auto Door ──
-    local AutoDoor = { Enabled = false, Range = 10 }
-    local AD_PATHS = {
-        'workspace.MAP.Indestructible.Military:GetChildren()[26].Model.Door:GetChildren()[11].ClickDetector',
-        'workspace.MAP.Indestructible.Military:GetChildren()[4].Model.Door:GetChildren()[23].ClickDetector',
-        'workspace.MAP.Indestructible.MilitaryDestruction.Model.Model.Door:GetChildren()[12].ClickDetector',
-        'workspace.MAP.Indestructible.MilitaryDestruction:GetChildren()[3].Model.Door:GetChildren()[13].ClickDetector',
-        'workspace.MAP.Map.Apartment:GetChildren()[33].Door:GetChildren()[7].ClickDetector',
-        'workspace.MAP.Map.Apartment.Door:GetChildren()[16].ClickDetector',
-        'workspace.MAP.Map.Apartment:GetChildren()[41].Door:GetChildren()[11].ClickDetector',
-        'workspace.MAP.Map.Apartment:GetChildren()[49].Door:GetChildren()[8].ClickDetector',
-        'workspace.MAP.Map.Apartment:GetChildren()[32].Door:GetChildren()[15].ClickDetector',
-        'workspace.MAP.Indestructible:GetChildren()[3]:GetChildren()[2]:GetChildren()[20]:GetChildren()[19].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[10].Perm.Door:GetChildren()[22].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[11].Perm:GetChildren()[6]:GetChildren()[20].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[12].Perm.Door.Part.ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[10].Perm:GetChildren()[6]:GetChildren()[15].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[12].Perm:GetChildren()[6]:GetChildren()[7].ClickDetector',
-        'workspace.MAP.Map["Ubi\'s Resturant"].Door:GetChildren()[20].ClickDetector',
-        'workspace.MAP.Map.WarehouseExpansion.Door:GetChildren()[24].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[4].Perm:GetChildren()[6]:GetChildren()[10].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[4].Perm.Door:GetChildren()[7].ClickDetector',
-        'workspace.MAP.Map.AbandonedBuilding_Addition.Abandoned_House:GetChildren()[8].Part.ClickDetector',
-        'workspace.MAP.Map.AbandonedBuilding_Addition.Abandoned_House.Door:GetChildren()[27].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"].Apartment.Perm.Door:GetChildren()[21].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"].Apartment.Perm:GetChildren()[6]:GetChildren()[14].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[15].Perm.Door:GetChildren()[9].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[15].Perm:GetChildren()[6]:GetChildren()[7].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[14].Perm.Door:GetChildren()[19].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[14].Perm:GetChildren()[6]:GetChildren()[21].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[6].Perm.Door:GetChildren()[13].ClickDetector',
-        'workspace.MAP.Map["Game-Houses"]:GetChildren()[6].Perm:GetChildren()[6]:GetChildren()[26].ClickDetector',
-    }
+    -- ── Auto Door (MAP-scan based, no hardcoded paths) ──
+    local AutoDoor = { Enabled = false, Range = 10, FireInterval = 0.05 }
+    local ad_tracked, ad_seen, ad_fireAt = {}, {}, {}
+    local ad_lastScan = 0
 
-    local function ad_resolve(expr)
-        local node = workspace
-        local i, n = 1, #expr
-        while i <= n and node do
-            local ch = expr:sub(i, i)
-            if ch == "." then
-                local j = i + 1
-                while j <= n and not expr:sub(j, j):match("[%.:%[]") do j = j + 1 end
-                node = node:FindFirstChild(expr:sub(i + 1, j - 1))
-                i = j
-            elseif ch == "[" then
-                local close = expr:find("]", i, true)
-                if not close then return nil end
-                local inner = expr:sub(i + 1, close - 1)
-                local quoted = inner:match('^"(.*)"$') or inner:match("^'(.*)'$")
-                if quoted then node = node:FindFirstChild(quoted)
-                else
-                    local idx = tonumber(inner)
-                    node = idx and node:GetChildren()[idx] or nil
-                end
-                i = close + 1
-            elseif ch == ":" then
-                local close = expr:find("]", i, true)
-                if not close then return nil end
-                local idx = expr:sub(i, close):match("%[(%d+)%]")
-                node = (idx and node) and node:GetChildren()[tonumber(idx)] or nil
-                i = close + 1
-            else i = i + 1 end
-        end
-        return node
-    end
-
-    local ad_tracked, ad_seen = {}, {}
-    local function ad_findCD(obj)
-        if not obj then return nil end
-        if obj:IsA("ClickDetector") then return obj end
-        local cd = obj:FindFirstChildOfClass("ClickDetector")
-            or obj:FindFirstChild("ClickDetector")
-            or obj:FindFirstChild("Clickdetector")
-        if cd then return cd end
-        return obj:FindFirstChildWhichIsA("ClickDetector", true)
-    end
-    local function ad_rebuild()
-        ad_tracked, ad_seen = {}, {}
-        for _, expr in ipairs(AD_PATHS) do
-            local obj = ad_resolve(expr)
-            local cd = ad_findCD(obj)
-            -- If path ended on parent (ClickDetector missing), try parent of last resolved
-            if not cd and obj and obj.Parent then
-                cd = ad_findCD(obj.Parent)
-            end
-            if cd and not ad_seen[cd] then
-                ad_seen[cd] = true
-                table.insert(ad_tracked, {cd = cd})
-            end
-        end
-    end
-    ad_rebuild()
-    -- Refresh paths periodically (map streaming)
-    task.spawn(function()
-        while Alive do
-            task.wait(3)
-            if AutoDoor.Enabled then pcall(ad_rebuild) end
-        end
-    end)
-
-    -- Only real Lock instances (NOT "Block" / parts that merely contain "lock")
     local function ad_isLock(cd)
         local p = cd and cd.Parent
         local depth = 0
         while p and depth < 6 do
             local n = tostring(p.Name or "")
-            if n == "Lock" or n == "lock" or n == "LOCKED" then
-                return true
-            end
+            if n == "Lock" or n == "lock" or n == "LOCKED" then return true end
             p = p.Parent
             depth = depth + 1
         end
         return false
     end
 
+    local function ad_doorPos(cd)
+        local parent = cd and cd.Parent
+        if not parent then return nil end
+        if parent:IsA("BasePart") then return parent.Position end
+        local p = parent:FindFirstChildWhichIsA("BasePart", true)
+        if p then return p.Position end
+        local ok, pivot = pcall(function() return parent:GetPivot().Position end)
+        return ok and pivot or nil
+    end
+
+    local function ad_isClosed(cd)
+        local parent = cd and cd.Parent
+        if not parent then return true end
+        local sawPart, anyCollide = false, false
+        local function scan(inst, depth)
+            if not inst or depth > 6 then return end
+            if inst:IsA("BasePart") then
+                sawPart = true
+                if inst.CanCollide then anyCollide = true end
+            end
+            for _, ch in ipairs(inst:GetChildren()) do
+                scan(ch, depth + 1)
+            end
+        end
+        scan(parent, 0)
+        if parent.Parent then scan(parent.Parent, 0) end
+        if not sawPart then return true end
+        return anyCollide
+    end
+
     local function ad_fire(cd)
-        if not cd or not cd.Parent then return end
-        if ad_isLock(cd) then return end
-        pcall(function() cd.MaxActivationDistance = 64 end)
+        if not cd or not cd.Parent or ad_isLock(cd) then return end
+        pcall(function() cd.MaxActivationDistance = 200 end)
         pcall(function()
             if fireclickdetector then
                 fireclickdetector(cd)
                 fireclickdetector(cd, 0)
+                fireclickdetector(cd, 1)
                 fireclickdetector(cd, 10)
+                fireclickdetector(cd, 50)
+                fireclickdetector(cd, 100)
             end
         end)
-        pcall(function()
-            if firesignal then firesignal(cd.MouseClick) end
-        end)
+        pcall(function() if firesignal then firesignal(cd.MouseClick) end end)
         pcall(function()
             if getconnections then
                 for _, conn in ipairs(getconnections(cd.MouseClick)) do
                     pcall(function()
                         if conn.Fire then conn:Fire()
                         elseif conn.Function then conn.Function()
+                        elseif type(conn) == "table" and conn.Function then conn.Function()
                         end
                     end)
                 end
             end
         end)
-    end
-
-    -- Part attached to the ClickDetector (used for position)
-    local function ad_part(cd)
-        if not cd then return nil end
-        local parent = cd.Parent
-        if not parent then return nil end
-        if parent:IsA("BasePart") then return parent end
-        local p = parent:FindFirstChildWhichIsA("BasePart", true)
-        return p
-    end
-
-    local function ad_pos(cd)
-        local part = ad_part(cd)
-        if part then return part.Position end
-        local parent = cd and cd.Parent
-        if not parent then return nil end
-        local ok, pivot = pcall(function() return parent:GetPivot().Position end)
-        if ok then return pivot end
-        return nil
-    end
-
-    -- Closed = any related door part still has CanCollide on. Open = all off → don't fire.
-    local function ad_isClosed(cd)
-        if not cd then return false end
-        local parent = cd.Parent
-        if not parent then return false end
-
-        local function hasCollide(inst, depth)
-            if not inst or depth > 5 then return false end
-            if inst:IsA("BasePart") and inst.CanCollide == true then
-                return true
+        pcall(function()
+            local p = cd.Parent
+            if p and fireclickdetector then
+                local other = p:FindFirstChildWhichIsA("ClickDetector", true)
+                if other and other ~= cd then fireclickdetector(other) end
             end
-            for _, ch in ipairs(inst:GetChildren()) do
-                if hasCollide(ch, depth + 1) then return true end
-            end
-            return false
-        end
-
-        if hasCollide(parent, 0) then return true end
-        -- Door model is often one level up from the ClickDetector parent
-        if parent.Parent and hasCollide(parent.Parent, 0) then return true end
-        if parent.Parent and parent.Parent.Parent and parent.Parent.Name:lower():find("door", 1, true) then
-            if hasCollide(parent.Parent.Parent, 0) then return true end
-        end
-        return false
+        end)
     end
 
-    -- Fire every nearby closed door (not locks). Fast scan + fire.
-    local ad_lastScan = 0
-    local AD_FIRE_INTERVAL = 0.05
-    local ad_fireAt = {} -- [cd] = last fire clock
+    local function ad_rescan()
+        ad_tracked, ad_seen = {}, {}
+        local map = workspace:FindFirstChild("MAP")
+        if not map then return end
+        for _, inst in ipairs(map:GetDescendants()) do
+            if inst:IsA("ClickDetector") and not ad_seen[inst] and not ad_isLock(inst) then
+                ad_seen[inst] = true
+                table.insert(ad_tracked, inst)
+            end
+        end
+    end
+
+    ad_rescan()
+
+    trackConn(LocalPlayer.CharacterAdded:Connect(function()
+        task.delay(1.2, function()
+            if Alive and AutoDoor.Enabled then pcall(ad_rescan); ad_lastScan = 0 end
+        end)
+        task.delay(3.5, function()
+            if Alive and AutoDoor.Enabled then pcall(ad_rescan); ad_lastScan = 0 end
+        end)
+    end))
+
     trackConn(RunService.Heartbeat:Connect(function()
         if not Alive or not AutoDoor.Enabled then return end
         local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
         if not hrp or (hum and hum.Health <= 0) then return end
         local myPos = hrp.Position
-        local range = AutoDoor.Range or 10
-        local now = os.clock()
-
-        if #ad_tracked == 0 or (now - ad_lastScan) > 1.5 then
+        local now   = os.clock()
+        local rescanEvery = (#ad_tracked == 0) and 0.5 or 1.5
+        if #ad_tracked == 0 or (now - ad_lastScan) > rescanEvery then
             ad_lastScan = now
-            pcall(ad_rebuild)
-            pcall(function()
-                local map = workspace:FindFirstChild("MAP")
-                if not map then return end
-                for _, inst in ipairs(map:GetDescendants()) do
-                    if inst:IsA("ClickDetector") and not ad_seen[inst] then
-                        if not ad_isLock(inst) then
-                            ad_seen[inst] = true
-                            table.insert(ad_tracked, {cd = inst})
-                        end
-                    end
-                end
-            end)
+            pcall(ad_rescan)
         end
-
-        for _, entry in ipairs(ad_tracked) do
-            local cd = entry.cd
+        for _, cd in ipairs(ad_tracked) do
             if cd and cd.Parent and not ad_isLock(cd) then
                 local last = ad_fireAt[cd] or 0
-                if (now - last) >= AD_FIRE_INTERVAL then
-                    local pos = ad_pos(cd)
-                    if pos and (myPos - pos).Magnitude <= range then
-                        -- Only closed doors (CanCollide still on)
+                if (now - last) >= AutoDoor.FireInterval then
+                    local pos = ad_doorPos(cd)
+                    if pos and (myPos - pos).Magnitude <= AutoDoor.Range then
                         if ad_isClosed(cd) then
                             ad_fireAt[cd] = now
                             ad_fire(cd)
@@ -6520,17 +6900,35 @@ do
         end
     end))
 
-    MiscellaneousSection:Toggle({
+    local adMasterOn = true
+    local adToggle
+    adToggle = MiscellaneousSection:Toggle({
         Name = "Auto Door", Flag = "util_autodoor", Default = false,
         Callback = function(state)
+            adMasterOn = state and true or false
             AutoDoor.Enabled = state and true or false
             if state then
-                ad_rebuild()
+                pcall(ad_rescan)
+                ad_lastScan = 0
             end
         end,
     })
-
-
+    adToggle:Keybind({
+        Flag = "util_autodoor_key", Default = Enum.KeyCode.Unknown, Mode = "Toggle",
+        Callback = function(v)
+            if type(v) ~= "boolean" then return end
+            if not adMasterOn then return end
+            do
+                local _kb = Library and Library.Flags and Library.Flags["util_autodoor_key"]
+                if isKeybindNone(_kb) then return end
+            end
+            AutoDoor.Enabled = v
+            if v then pcall(ad_rescan); ad_lastScan = 0 end
+            if adToggle and type(adToggle.SetValue) == "function" then
+                pcall(function() adToggle:SetValue(v) end)
+            end
+        end,
+    })
 
     -- ── Hover Buy ──
     -- Spams nearby shop ClickDetectors.
@@ -8322,7 +8720,13 @@ function doUnload()
     end)
 
     pcall(function()
-        if cr_restore then cr_restore() end
+        if ClientRedirectionState then ClientRedirectionState.Enabled = false end
+    end)
+    pcall(function()
+       if sa_teardown_ref then sa_teardown_ref() end
+    end)
+    pcall(function()
+       if cr_restore then cr_restore() end
     end)
 
     pcall(function()
@@ -8387,7 +8791,7 @@ task.spawn(function()
                     local ok = pcall(function()
                         for _, c in ipairs(d:GetDescendants()) do
                             if c:IsA("TextLabel") and type(c.Text) == "string"
-                               and (c.Text:find("/getelytra") or c.Text:find("getelytra")) then
+                               and (c.Text:find("/euleon") or c.Text:find("euleon")) then
                                 return true
                             end
                         end
@@ -8425,4 +8829,4 @@ task.spawn(function()
     if pg then pcall(scan, pg) end
 end)
 
-Library:Notification("/getelytra we bypass anticheats.", 4)
+Library:Notification("/euleon we bypass anticheats.", 4)
